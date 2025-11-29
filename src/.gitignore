@@ -8,8 +8,7 @@ env/
 venv/
 env3/
 ENV/
-.env
-.venv/
+
 # 数据相关
 data/*.bak
 *.csv.bak

@@ -1,7 +1,31 @@
+import os
 import pandas as pd
 import numpy as np
-import os
+import logging
 from datetime import datetime
+from dotenv import load_dotenv
+
+# 获取项目根目录的绝对路径
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 设置日志，使用绝对路径
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+log_file = os.path.join(LOG_DIR, 'data_process.log')
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    filename=log_file,
+                    filemode='w')
+
+# 同时输出到控制台
+console = logging.StreamHandler()
+console.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+console.setFormatter(formatter)
+logging.getLogger('').addHandler(console)
+
+# 加载环境变量
+load_dotenv()
 
 def process_and_group_data(stock_data):
     """
@@ -13,13 +37,14 @@ def process_and_group_data(stock_data):
     Returns:
         dict: 包含五个分组数据的字典
     """
-    print("开始处理数据...")
+    logging.info("开始处理数据...")
     
     # 确保日期列格式正确
     if 'trade_date' in stock_data.columns:
         if isinstance(stock_data['trade_date'].iloc[0], str):
             stock_data['trade_date'] = pd.to_datetime(stock_data['trade_date'], format='%Y%m%d')
     else:
+        logging.error("数据中缺少'trade_date'列")
         raise KeyError("数据中缺少'trade_date'列")
     
     # 使用正确的市值字段
@@ -28,14 +53,15 @@ def process_and_group_data(stock_data):
     
     if not market_cap_field:
         # 如果没有市值数据，则创建估算值
-        print("警告：未找到市值数据，使用估算值")
+        logging.warning("未找到市值数据，使用估算值")
         if 'close' in stock_data.columns:
             stock_data['market_cap'] = stock_data['close'] * 1000000  # 单位：万元
             market_cap_field = 'market_cap'
         else:
+            logging.error("数据中缺少计算市值所需的'close'列")
             raise KeyError("数据中缺少计算市值所需的'close'列")
     
-    print(f"使用{market_cap_field}字段进行市值分组")
+    logging.info(f"使用{market_cap_field}字段进行市值分组")
     
     # 计算周收益率和月收益率
     if 'ts_code' in stock_data.columns:
@@ -48,12 +74,13 @@ def process_and_group_data(stock_data):
         # 计算月收益率
         stock_data['monthly_return'] = stock_data.groupby('ts_code')['close'].pct_change(periods=20)  # 近似月收益率
     else:
+        logging.error("数据中缺少'ts_code'列")
         raise KeyError("数据中缺少'ts_code'列")
     
     # 去除NaN值
     stock_data = stock_data.dropna(subset=[market_cap_field, 'weekly_return'])
     
-    print(f"处理后的数据量: {len(stock_data)}条记录")
+    logging.info(f"处理后的数据量: {len(stock_data)}条记录")
     
     # 按时间周期分组进行市值分组
     # 使用月度重分组，这是研究规模效应的常见做法
@@ -63,7 +90,7 @@ def process_and_group_data(stock_data):
     stock_data['year_month'] = stock_data['trade_date'].dt.to_period('M')
     grouped_by_month = stock_data.groupby('year_month')
     
-    print(f"共有{len(grouped_by_month)}个月的数据需要处理")
+    logging.info(f"共有{len(grouped_by_month)}个月的数据需要处理")
     
     # 存储每个分组的数据
     groups_data = {i: [] for i in range(1, 6)}
@@ -72,7 +99,7 @@ def process_and_group_data(stock_data):
     monthly_group_stats = []
     
     for year_month, monthly_data in grouped_by_month:
-        print(f"处理{year_month}的数据...")
+        logging.info(f"处理{year_month}的数据...")
         
         # 确保每个月份有足够的数据进行分组
         if len(monthly_data) >= 5:
@@ -94,7 +121,7 @@ def process_and_group_data(stock_data):
                         )
                     except ValueError:
                         # 如果qcut失败（通常是因为重复值太多），则使用rank方法
-                        print(f"{year_month}使用rank方法进行分组（qcut失败）")
+                        logging.warning(f"{year_month}使用rank方法进行分组（qcut失败）")
                         monthly_stocks['market_cap_rank'] = monthly_stocks[market_cap_field].rank(method='first')
                         total_stocks = len(monthly_stocks)
                         monthly_stocks['market_cap_group'] = pd.cut(
@@ -129,12 +156,12 @@ def process_and_group_data(stock_data):
                     
                     monthly_group_stats.append(month_stats)
                 else:
-                    print(f"{year_month}的数据不足，仅{len(monthly_stocks)}只股票")
+                    logging.warning(f"{year_month}的数据不足，仅{len(monthly_stocks)}只股票")
             except Exception as e:
-                print(f"处理{year_month}数据时出错: {e}")
+                logging.error(f"处理{year_month}数据时出错: {e}")
                 continue
         else:
-            print(f"{year_month}的数据不足，仅{len(monthly_data)}条记录")
+            logging.warning(f"{year_month}的数据不足，仅{len(monthly_data)}条记录")
     
     # 合并每个分组的数据
     for group_num in range(1, 6):
@@ -146,6 +173,14 @@ def process_and_group_data(stock_data):
             avg_monthly_return = result_dict[group_num]['monthly_return'].mean() if 'monthly_return' in result_dict[group_num].columns else np.nan
             
             group_type = "小市值" if group_num == 1 else "大市值" if group_num == 5 else "中等市值"
+            logging.info(f"第{group_num}组（{group_type}）统计信息:")
+            logging.info(f"  - 记录数: {len(result_dict[group_num])}条")
+            logging.info(f"  - 平均市值: {avg_market_cap:.2f}万元")
+            logging.info(f"  - 平均周收益率: {avg_weekly_return*100:.4f}%")
+            if not np.isnan(avg_monthly_return):
+                logging.info(f"  - 平均月收益率: {avg_monthly_return*100:.4f}%")
+                
+            # 同时打印到控制台
             print(f"\n第{group_num}组（{group_type}）统计信息:")
             print(f"  - 记录数: {len(result_dict[group_num])}条")
             print(f"  - 平均市值: {avg_market_cap:.2f}万元")
@@ -154,17 +189,20 @@ def process_and_group_data(stock_data):
                 print(f"  - 平均月收益率: {avg_monthly_return*100:.4f}%")
     
     # 保存分组后的数据
-    os.makedirs('../data', exist_ok=True)
+    data_dir = os.path.join(BASE_DIR, 'data')
+    os.makedirs(data_dir, exist_ok=True)
     for group_num, data in result_dict.items():
-        save_path = f"../data/group_{group_num}_data.csv"
+        save_path = os.path.join(data_dir, f"group_{group_num}_data.csv")
         data.to_csv(save_path, index=False)
+        logging.info(f"第{group_num}组数据已保存到{save_path}")
         print(f"\n第{group_num}组数据已保存到{save_path}")
     
     # 保存月度分组统计信息
     if monthly_group_stats:
         stats_df = pd.DataFrame(monthly_group_stats)
-        stats_save_path = "../data/monthly_group_stats.csv"
+        stats_save_path = os.path.join(data_dir, "monthly_group_stats.csv")
         stats_df.to_csv(stats_save_path, index=False)
+        logging.info(f"月度分组统计信息已保存到{stats_save_path}")
         print(f"月度分组统计信息已保存到{stats_save_path}")
     
     # 计算整体规模效应指标
@@ -172,6 +210,12 @@ def process_and_group_data(stock_data):
         small_cap_return = result_dict[1]['weekly_return'].mean()
         large_cap_return = result_dict[5]['weekly_return'].mean()
         size_premium = small_cap_return - large_cap_return
+        
+        logging.info(f"规模效应分析结果:")
+        logging.info(f"小市值组（第1组）平均周收益率: {small_cap_return*100:.4f}%")
+        logging.info(f"大市值组（第5组）平均周收益率: {large_cap_return*100:.4f}%")
+        logging.info(f"小市值-大市值超额收益: {size_premium*100:.4f}%")
+        logging.info(f"年化超额收益: {size_premium*52*100:.4f}%")
         
         print(f"\n规模效应分析结果:")
         print(f"小市值组（第1组）平均周收益率: {small_cap_return*100:.4f}%")
